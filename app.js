@@ -1,112 +1,270 @@
-/*
-  MARYNEL - Autenticación local de prueba
-  ---------------------------------------
-  Código de prueba: 48271935
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-  El código NO aparece escrito completo.
-  Regla: cada fragmento contiene una letra "l" seguida
-  por el dígito correspondiente. Se reconstruye en orden.
-  Esto es OFUSCACIÓN, no seguridad criptográfica.
-*/
-const partes = [
-  "l4x","al8","ml2q","l7z","pl1","l9k","l3r","l5"
-];
+const firebaseConfig = {
+  apiKey: "AIzaSyDJX6g8dvSkfKZlR0o-Dcd7toCAqW5pYU",
+  authDomain: "marynel-codigos.firebaseapp.com",
+  projectId: "marynel-codigos",
+  storageBucket: "marynel-codigos.firebasestorage.app",
+  messagingSenderId: "694029007899",
+  appId: "1:694029007899:web:45775312608c6f8e114cbe"
+};
 
-function reconstruirCodigo(){
-  return partes.map(p=>{
-    const i=p.indexOf("l");
-    return p.charAt(i+1);
-  }).join("");
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const firebaseAuthReady = signInAnonymously(auth).catch(err => {
+  console.error("Error de autenticación anónima:", err);
+  return null;
+});
+
+const MASTER_CODE = "48271935";
+const CODES = "marynel_codes";
+const TARGET_AVAILABLE = 20;
+let currentCode = null;
+let currentDiscount = 0;
+let adminMode = false;
+let tries = 0;
+let lockedUntil = 0;
+
+const $ = id => document.getElementById(id);
+const authGate = $("authGate");
+const authCard = $("authCard");
+const authCode = $("authCode");
+const authMsg = $("authMsg");
+const menuBtn = $("menuBtn");
+const menuPanel = $("menuPanel");
+
+function authMessage(text, type = "") {
+  authMsg.textContent = text;
+  authMsg.className = "auth-msg " + type;
 }
 
-const codigoCorrecto = reconstruirCodigo();
-let intentos=0;
-const MAX_INTENTOS=5;
-let bloqueadoHasta=0;
-
-const input=document.getElementById("codeInput");
-const btn=document.getElementById("loginBtn");
-const msg=document.getElementById("message");
-const login=document.getElementById("loginCard");
-const welcome=document.getElementById("welcomeCard");
-const box=document.getElementById("codeBox");
-
-function mensaje(texto,tipo=""){
-  msg.textContent=texto;
-  msg.className="message "+tipo;
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
 }
 
-function verificar(){
-  const ahora=Date.now();
-  if(ahora<bloqueadoHasta){
-    const s=Math.ceil((bloqueadoHasta-ahora)/1000);
-    mensaje(`Espera ${s} segundos para volver a intentar.`,"error");
+function randomCode() {
+  let code = "";
+  for (let i = 0; i < 8; i++) code += Math.floor(Math.random() * 10);
+  return code;
+}
+
+async function consumeCode(code) {
+  const ref = doc(db, CODES, code);
+  return runTransaction(db, async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return { ok: false, reason: "Código no registrado." };
+    const data = snap.data();
+    if (data.status !== "available") return { ok: false, reason: "Este código ya fue utilizado." };
+
+    let replacement = randomCode();
+    let replacementRef = doc(db, CODES, replacement);
+    for (let i = 0; i < 8; i++) {
+      const existing = await tx.get(replacementRef);
+      if (!existing.exists()) break;
+      replacement = randomCode();
+      replacementRef = doc(db, CODES, replacement);
+      if (i === 7) throw new Error("No se pudo generar un código único.");
+    }
+
+    const discount = Number(data.discount || 0);
+    tx.update(ref, { status: "used", usedAt: serverTimestamp() });
+    tx.set(replacementRef, { discount, status: "available", createdAt: serverTimestamp(), replacementOf: code });
+    return { ok: true, discount, replacement };
+  });
+}
+
+function applyDiscount(percent) {
+  document.querySelectorAll(".price[data-price]").forEach(el => {
+    const original = Number(el.dataset.price);
+    const final = original * (1 - percent / 100);
+    el.innerHTML = `<span style="text-decoration:line-through;color:#71829b;font-size:13px">Q${original.toFixed(2)}</span> &nbsp; Q${final.toFixed(2)} <small style="color:#63eca0">-${percent}%</small>`;
+  });
+}
+
+function openSite() {
+  authGate.classList.add("site-hidden");
+  if (window.anime) {
+    anime({ targets: ".hero-copy>*", translateY: [28, 0], opacity: [0, 1], delay: anime.stagger(90), duration: 850, easing: "easeOutExpo" });
+    anime({ targets: ".hero-art", scale: [.94, 1], opacity: [0, 1], duration: 1000, easing: "easeOutExpo", delay: 200 });
+    anime({ targets: ".brand img", rotate: [-25, 0], scale: [.7, 1], duration: 900, easing: "easeOutElastic(1,.6)" });
+  }
+}
+
+function logout() {
+  menuPanel.classList.remove("open");
+  authGate.classList.remove("site-hidden");
+  $("admin").hidden = true;
+  authCode.value = "";
+  authMessage("");
+  currentCode = null;
+  currentDiscount = 0;
+  adminMode = false;
+  tries = 0;
+  setTimeout(() => authCode.focus(), 100);
+}
+
+async function authenticate() {
+  const now = Date.now();
+  if (now < lockedUntil) {
+    authMessage(`Acceso bloqueado. Espera ${Math.ceil((lockedUntil - now) / 1000)} s.`, "auth-error");
+    return;
+  }
+  const code = authCode.value.trim();
+  if (!/^\d{8}$/.test(code)) {
+    authMessage("Introduce exactamente 8 dígitos.", "auth-error");
+    authCard.classList.remove("shake-auth"); void authCard.offsetWidth; authCard.classList.add("shake-auth");
     return;
   }
 
-  const codigo=input.value.trim();
-  if(!/^\d{8}$/.test(codigo)){
-    mensaje("Introduce exactamente 8 dígitos.","error");
-    box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+  if (code === MASTER_CODE) {
+    tries = 0;
+    adminMode = true;
+    currentCode = code;
+    currentDiscount = 0;
+    authMessage("Acceso autorizado.", "auth-ok");
+    openSite();
+    openAdmin();
+    toast("Llave maestra: administración autorizada");
     return;
   }
 
-  if(codigo===codigoCorrecto){
-    mensaje("");
-    login.classList.add("hidden");
-    welcome.classList.remove("hidden");
-    return;
+  try {
+    authMessage("Verificando código…");
+    const session = await firebaseAuthReady;
+    if (!session) {
+      authMessage("No se pudo iniciar la sesión de Firebase.", "auth-error");
+      return;
+    }
+    const result = await consumeCode(code);
+    if (!result.ok) {
+      tries++;
+      authMessage(`${result.reason}${tries >= 5 ? "" : ` · quedan ${5 - tries} intentos`}`, "auth-error");
+      authCode.value = "";
+      if (tries >= 5) {
+        tries = 0;
+        lockedUntil = Date.now() + 30000;
+        authMessage("Demasiados intentos. Espera 30 segundos.", "auth-error");
+      }
+      return;
+    }
+    tries = 0;
+    currentCode = code;
+    currentDiscount = result.discount;
+    openSite();
+    applyDiscount(result.discount);
+    toast(`¡Código aceptado! Tu descuento es ${result.discount}%`);
+  } catch (err) {
+    console.error(err);
+    authMessage("No se pudo conectar con Firestore.", "auth-error");
   }
-
-  intentos++;
-  input.value="";
-  box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
-
-  if(intentos>=MAX_INTENTOS){
-    bloqueadoHasta=Date.now()+30000;
-    intentos=0;
-    mensaje("Demasiados intentos. Bloqueado 30 segundos.","error");
-  }else{
-    mensaje(`Código incorrecto · quedan ${MAX_INTENTOS-intentos} intentos.`,"error");
-  }
-  input.focus();
 }
 
-btn.addEventListener("click",verificar);
-input.addEventListener("keydown",e=>{if(e.key==="Enter")verificar();});
-
-document.getElementById("logoutBtn").addEventListener("click",()=>{
-  welcome.classList.add("hidden");
-  login.classList.remove("hidden");
-  input.value="";
-  mensaje("");
-  input.focus();
-});
-
-document.getElementById("colorBtn").addEventListener("click",()=>{
-  document.body.classList.toggle("alt");
-});
-
-document.getElementById("bounceBtn").addEventListener("click",()=>{
-  welcome.classList.remove("bounce");
-  void welcome.offsetWidth;
-  welcome.classList.add("bounce");
-});
-
-document.getElementById("brandMark").addEventListener("click",e=>{
-  e.currentTarget.style.transform="rotate(360deg) scale(1.12)";
-  setTimeout(()=>e.currentTarget.style.transform="",450);
-});
-
-// Partículas ligeras, sin librerías externas.
-const particles=document.getElementById("particles");
-for(let i=0;i<22;i++){
-  const p=document.createElement("span");
-  p.className="particle";
-  p.style.left=Math.random()*100+"%";
-  p.style.animationDuration=(5+Math.random()*8)+"s";
-  p.style.animationDelay=(-Math.random()*10)+"s";
-  p.style.opacity=(.25+Math.random()*.5);
-  particles.appendChild(p);
+async function loadCodes() {
+  try {
+    const available = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
+    const used = await getDocs(query(collection(db, CODES), where("status", "==", "used")));
+    $("availableCount").textContent = available.size;
+    $("usedCount").textContent = used.size;
+    $("codeList").innerHTML = "";
+    available.docs.slice(0, 100).forEach(s => {
+      const d = s.data();
+      const row = document.createElement("div");
+      row.className = "code-item";
+      row.innerHTML = `<strong>${s.id}</strong> <span>${d.discount || 0}%</span>`;
+      $("codeList").appendChild(row);
+    });
+  } catch (err) {
+    console.error(err);
+    toast("No se pudo leer Firestore");
+  }
 }
-input.focus();
+
+async function generateCodes() {
+  const discount = Number($("discountSelect").value);
+  const requested = Math.min(20, Math.max(1, Number($("quantity").value) || 20));
+  try {
+    const available = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
+    const needed = Math.min(requested, Math.max(0, TARGET_AVAILABLE - available.size));
+    if (!needed) { toast("Ya hay 20 códigos disponibles"); return; }
+    const existing = new Set(available.docs.map(d => d.id));
+    let created = 0;
+    while (created < needed) {
+      const code = randomCode();
+      if (existing.has(code)) continue;
+      const ref = doc(db, CODES, code);
+      if ((await getDoc(ref)).exists()) { existing.add(code); continue; }
+      await setDoc(ref, { discount, status: "available", createdAt: serverTimestamp() });
+      existing.add(code);
+      created++;
+    }
+    toast(`Se agregaron ${created} códigos`);
+    await loadCodes();
+  } catch (err) {
+    console.error(err);
+    toast("Error generando códigos");
+  }
+}
+
+function openAdmin() {
+  if (!adminMode) { toast("Solo la llave maestra puede administrar"); return; }
+  $("admin").hidden = false;
+  $("admin").scrollIntoView({ behavior: "smooth", block: "start" });
+  loadCodes();
+}
+
+function closeMenu() {
+  menuPanel.classList.remove("open");
+  menuBtn.setAttribute("aria-expanded", "false");
+}
+
+menuBtn.addEventListener("click", e => {
+  e.stopPropagation();
+  const open = menuPanel.classList.toggle("open");
+  menuBtn.setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", e => {
+  if (menuPanel.classList.contains("open") && !menuPanel.contains(e.target) && e.target !== menuBtn) closeMenu();
+});
+document.querySelectorAll("[data-go]").forEach(btn => btn.addEventListener("click", () => {
+  $(btn.dataset.go)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  closeMenu();
+}));
+$("menuAvatar").addEventListener("click", () => { $("overlay").classList.add("show"); closeMenu(); });
+$("menuLogout").addEventListener("click", logout);
+$("adminMenu").addEventListener("click", () => { openAdmin(); closeMenu(); });
+$("authBtn").addEventListener("click", authenticate);
+authCode.addEventListener("keydown", e => { if (e.key === "Enter") authenticate(); });
+$("imageBtn")?.addEventListener("click", () => $("overlay").classList.add("show"));
+$("close")?.addEventListener("click", () => $("overlay").classList.remove("show"));
+$("overlay")?.addEventListener("click", e => { if (e.target.id === "overlay") e.currentTarget.classList.remove("show"); });
+$("heroArt")?.addEventListener("click", () => $("overlay").classList.add("show"));
+$("generateBtn").addEventListener("click", generateCodes);
+
+document.querySelectorAll(".product").forEach(card => {
+  const head = card.querySelector(".product-head");
+  head?.addEventListener("click", () => {
+    card.classList.toggle("open");
+    if (window.anime) anime({ targets: card, scale: [1.015, 1], duration: 300, easing: "easeOutQuad" });
+  });
+});
+
+// Partículas decorativas: se crean una sola vez.
+if (window.anime) {
+  for (let i = 0; i < 20; i++) {
+    const p = document.createElement("i");
+    p.className = "particle";
+    p.style.left = Math.random() * 100 + "%";
+    p.style.top = Math.random() * 100 + "%";
+    document.body.appendChild(p);
+    anime({ targets: p, translateY: [0, -(80 + Math.random() * 180)], translateX: (Math.random() - .5) * 90, opacity: [0, .65, 0], duration: 5000 + Math.random() * 5000, delay: Math.random() * 2500, loop: true, easing: "easeInOutSine" });
+  }
+}
+
+authCode.focus();
