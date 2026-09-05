@@ -42,3 +42,10 @@ Los códigos nuevos y los códigos de reemplazo reciben automáticamente un desc
 - El código maestro `48271935` no puede ser generado como código de descuento.
 - Si un código no existe en Firestore, el sistema lo informa claramente en lugar de aceptar cualquier número de 8 dígitos.
 - Al consumir un código disponible, se crea un reemplazo automático con descuento variable de 5%–50%.
+
+## Corrección v2.2 — acceso de códigos y descuento global
+- Se eliminó la dependencia de Firebase Anonymous Authentication, que provocaba el mensaje “No se pudo iniciar la sesión de Firebase” cuando ese proveedor no estaba habilitado.
+- Los códigos de descuento se validan directamente contra Firestore.
+- Al aceptar un código, su porcentaje se aplica a todos los elementos de precio que usen `data-price` o `.price` y se muestra además en todos los productos publicados con la etiqueta de descuento.
+- El código consumido genera automáticamente un reemplazo con descuento variable.
+- Se conserva la llave maestra `48271935`.

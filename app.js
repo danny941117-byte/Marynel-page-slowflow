@@ -1,5 +1,4 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -13,11 +12,6 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const auth = getAuth(app);
-const firebaseAuthReady = signInAnonymously(auth).catch(err => {
-  console.error("Error de autenticación anónima:", err);
-  return null;
-});
 
 const MASTER_CODE = "48271935";
 const CODES = "marynel_codes";
@@ -46,7 +40,7 @@ function toast(text) {
   el.textContent = text;
   el.classList.add("show");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
 function randomCode() {
@@ -55,7 +49,6 @@ function randomCode() {
   return code;
 }
 
-// Descuentos variables: cualquier valor entero entre 5% y 50%.
 function randomDiscount() {
   return Math.floor(Math.random() * 46) + 5;
 }
@@ -65,40 +58,94 @@ async function consumeCode(code) {
   return runTransaction(db, async tx => {
     const snap = await tx.get(ref);
     if (!snap.exists()) {
-      return {
-        ok: false,
-        reason: "Código no registrado en Firebase. Genera el código desde el panel y verifica que aparezca en la lista."
-      };
+      return { ok: false, reason: "Código no registrado en Firebase." };
     }
+
     const data = snap.data();
-    if (data.status !== "available") return { ok: false, reason: "Este código ya fue utilizado." };
+    if (String(data.status || "").toLowerCase() !== "available") {
+      return { ok: false, reason: "Este código ya fue utilizado." };
+    }
 
     let replacement = randomCode();
     while (replacement === MASTER_CODE) replacement = randomCode();
     let replacementRef = doc(db, CODES, replacement);
-    for (let i = 0; i < 8; i++) {
+
+    for (let i = 0; i < 12; i++) {
       const existing = await tx.get(replacementRef);
       if (!existing.exists()) break;
       replacement = randomCode();
       while (replacement === MASTER_CODE) replacement = randomCode();
       replacementRef = doc(db, CODES, replacement);
-      if (i === 7) throw new Error("No se pudo generar un código único.");
+      if (i === 11) throw new Error("No se pudo generar un código único.");
     }
 
     const discount = Number(data.discount || 0);
+    if (!Number.isFinite(discount) || discount < 1 || discount > 100) {
+      return { ok: false, reason: "El código existe, pero su descuento no es válido." };
+    }
+
     const replacementDiscount = randomDiscount();
     tx.update(ref, { status: "used", usedAt: serverTimestamp() });
-    tx.set(replacementRef, { discount: replacementDiscount, status: "available", createdAt: serverTimestamp(), replacementOf: code });
+    tx.set(replacementRef, {
+      discount: replacementDiscount,
+      status: "available",
+      createdAt: serverTimestamp(),
+      replacementOf: code
+    });
+
     return { ok: true, discount, replacement, replacementDiscount };
   });
 }
 
+function addDiscountBadge(card, percent) {
+  if (!card) return;
+  let badge = card.querySelector(".marynel-discount-badge");
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.className = "marynel-discount-badge";
+    const head = card.querySelector(".product-head");
+    if (head) head.insertAdjacentElement("afterend", badge);
+    else card.prepend(badge);
+  }
+  badge.textContent = `DESCUENTO CON TU CÓDIGO: -${percent}%`;
+  badge.hidden = false;
+}
+
 function applyDiscount(percent) {
-  document.querySelectorAll(".price[data-price]").forEach(el => {
-    const original = Number(el.dataset.price);
+  currentDiscount = percent;
+
+  // 1) Cualquier precio preparado con data-price.
+  document.querySelectorAll("[data-price]").forEach(el => {
+    const original = Number(el.dataset.originalPrice || el.dataset.price);
+    if (!Number.isFinite(original)) return;
+    el.dataset.originalPrice = String(original);
     const final = original * (1 - percent / 100);
-    el.innerHTML = `<span style="text-decoration:line-through;color:#71829b;font-size:13px">Q${original.toFixed(2)}</span> &nbsp; Q${final.toFixed(2)} <small style="color:#63eca0">-${percent}%</small>`;
+    el.innerHTML = `<span class="marynel-original-price">Q${original.toFixed(2)}</span> &nbsp; <strong>Q${final.toFixed(2)}</strong> <small class="marynel-discount-percent">-${percent}%</small>`;
   });
+
+  // 2) Elementos con clase .price que ya tengan un precio numérico.
+  document.querySelectorAll(".price").forEach(el => {
+    if (el.dataset.price) return;
+    const text = el.textContent.replace(/,/g, ".");
+    const match = text.match(/(?:Q\s*)?(\d+(?:\.\d{1,2})?)/);
+    if (!match) return;
+    const original = Number(match[1]);
+    if (!Number.isFinite(original)) return;
+    el.dataset.price = String(original);
+    el.dataset.originalPrice = String(original);
+    const final = original * (1 - percent / 100);
+    el.innerHTML = `<span class="marynel-original-price">Q${original.toFixed(2)}</span> &nbsp; <strong>Q${final.toFixed(2)}</strong> <small class="marynel-discount-percent">-${percent}%</small>`;
+  });
+
+  // 3) Todos los productos/categorías publicados reciben el porcentaje.
+  document.querySelectorAll(".product").forEach(card => addDiscountBadge(card, percent));
+
+  // 4) También marcamos cualquier bloque de catálogo que use otras estructuras.
+  document.querySelectorAll("[data-product], .product-card, .catalog-product").forEach(el => {
+    if (!el.classList.contains("product")) addDiscountBadge(el, percent);
+  });
+
+  toast(`¡Código aceptado! Tu descuento es ${percent}% para todos los productos`);
 }
 
 function openSite() {
@@ -120,6 +167,7 @@ function logout() {
   currentDiscount = 0;
   adminMode = false;
   tries = 0;
+  document.querySelectorAll(".marynel-discount-badge").forEach(el => el.remove());
   setTimeout(() => authCode.focus(), 100);
 }
 
@@ -129,6 +177,7 @@ async function authenticate() {
     authMessage(`Acceso bloqueado. Espera ${Math.ceil((lockedUntil - now) / 1000)} s.`, "auth-error");
     return;
   }
+
   const code = authCode.value.trim();
   if (!/^\d{8}$/.test(code)) {
     authMessage("Introduce exactamente 8 dígitos.", "auth-error");
@@ -150,12 +199,12 @@ async function authenticate() {
 
   try {
     authMessage("Verificando código…");
-    const session = await firebaseAuthReady;
-    if (!session) {
-      authMessage("No se pudo iniciar la sesión de Firebase.", "auth-error");
-      return;
-    }
+
+    // IMPORTANTE: ya no se usa signInAnonymously().
+    // Esa era la causa del mensaje “No se pudo iniciar la sesión de Firebase”
+    // cuando Anonymous Authentication no estaba habilitado en el proyecto.
     const result = await consumeCode(code);
+
     if (!result.ok) {
       tries++;
       authMessage(`${result.reason}${tries >= 5 ? "" : ` · quedan ${5 - tries} intentos`}`, "auth-error");
@@ -167,15 +216,20 @@ async function authenticate() {
       }
       return;
     }
+
     tries = 0;
     currentCode = code;
-    currentDiscount = result.discount;
     openSite();
     applyDiscount(result.discount);
-    toast(`¡Código aceptado! Tu descuento es ${result.discount}%`);
+
   } catch (err) {
-    console.error(err);
-    authMessage("No se pudo conectar con Firestore.", "auth-error");
+    console.error("Error validando código:", err);
+    const msg = String(err?.message || err || "");
+    if (/permission|insufficient/i.test(msg)) {
+      authMessage("Firebase está rechazando el acceso a Firestore. Revisa las reglas de la colección marynel_codes.", "auth-error");
+    } else {
+      authMessage("No se pudo validar el código en Firebase. Comprueba tu conexión e inténtalo de nuevo.", "auth-error");
+    }
   }
 }
 
@@ -202,15 +256,8 @@ async function loadCodes() {
 async function generateCodes() {
   const requested = Math.min(20, Math.max(1, Number($("quantity").value) || 20));
   try {
-    // Solo se cuentan códigos realmente disponibles.
-    const availableSnap = await getDocs(
-      query(collection(db, CODES), where("status", "==", "available"))
-    );
-
-    const needed = Math.min(
-      requested,
-      Math.max(0, TARGET_AVAILABLE - availableSnap.size)
-    );
+    const availableSnap = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
+    const needed = Math.min(requested, Math.max(0, TARGET_AVAILABLE - availableSnap.size));
 
     if (!needed) {
       toast("Ya hay 20 códigos disponibles");
@@ -218,61 +265,45 @@ async function generateCodes() {
       return;
     }
 
-    // Evita reutilizar cualquier ID que ya exista (disponible o usado).
     const existing = new Set(availableSnap.docs.map(d => d.id));
     const selected = [];
 
     while (selected.length < needed) {
       const code = randomCode();
-      if (existing.has(code)) continue;
-
+      if (code === MASTER_CODE || existing.has(code)) continue;
       const ref = doc(db, CODES, code);
       const snap = await getDoc(ref);
       if (snap.exists()) {
         existing.add(code);
         continue;
       }
-
       existing.add(code);
       selected.push({ code, ref, discount: randomDiscount() });
     }
 
-    // Escritura en lote: los códigos se crean todos juntos.
     const batch = writeBatch(db);
-    selected.forEach(({ ref, discount }) => {
-      batch.set(ref, {
-        discount,
-        status: "available",
-        createdAt: serverTimestamp()
-      });
-    });
-
+    selected.forEach(({ ref, discount }) => batch.set(ref, {
+      discount,
+      status: "available",
+      createdAt: serverTimestamp()
+    }));
     await batch.commit();
 
-    // Verificación real: no mostramos "generado" hasta confirmar que
-    // Firestore puede leer los códigos que acabamos de crear.
     const verified = [];
     for (const item of selected) {
       const check = await getDoc(item.ref);
-      if (check.exists() && check.data().status === "available") {
-        verified.push(item.code);
-      }
+      if (check.exists() && check.data().status === "available") verified.push(item.code);
     }
 
-    if (verified.length !== selected.length) {
-      console.error("Verificación incompleta:", { selected, verified });
-      toast(`Advertencia: ${verified.length}/${selected.length} códigos confirmados`);
-    } else {
-      toast(`Se generaron y verificaron ${verified.length} códigos`);
-    }
-
+    toast(`Se generaron y verificaron ${verified.length}/${selected.length} códigos`);
     await loadCodes();
   } catch (err) {
     console.error("Error generando códigos:", err);
-    authMessage?.("No se pudieron guardar los códigos en Firestore.", "auth-error");
+    authMessage("No se pudieron guardar los códigos en Firestore.", "auth-error");
     toast("Error generando códigos en Firebase");
   }
 }
+
 async function randomizeAvailableDiscounts() {
   try {
     const available = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
@@ -331,7 +362,6 @@ document.querySelectorAll(".product").forEach(card => {
   });
 });
 
-// Partículas decorativas: se crean una sola vez.
 if (window.anime) {
   for (let i = 0; i < 20; i++) {
     const p = document.createElement("i");
