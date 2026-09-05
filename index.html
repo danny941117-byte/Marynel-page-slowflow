@@ -90,13 +90,14 @@
     <p>La llave maestra permite administrar el inventario objetivo de <b>20 códigos disponibles</b>.</p>
     <div class="admin-grid">
       <label>Descuento
-        <select id="discountSelect"><option value="5">5%</option><option value="10" selected>10%</option><option value="15">15%</option><option value="20">20%</option><option value="25">25%</option></select>
+        <div class="discount-range">Descuento automático: <strong>5%–50%</strong></div>
       </label>
       <label>Cantidad a generar
         <input id="quantity" type="number" min="1" max="20" value="20">
       </label>
     </div>
     <button id="generateBtn" class="btn primary">GENERAR / COMPLETAR 20 CÓDIGOS</button>
+    <button id="randomizeDiscountsBtn" class="btn">ACTUALIZAR DESCUENTOS 5%–50%</button>
     <div class="admin-stats">
       <div><small>Disponibles</small><strong id="availableCount">0</strong></div>
       <div><small>Usados</small><strong id="usedCount">0</strong></div>

@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDJX6g8dvSkfKZlR0o-Dcd7toCAqW5pYU",
@@ -55,28 +55,41 @@ function randomCode() {
   return code;
 }
 
+// Descuentos variables: cualquier valor entero entre 5% y 50%.
+function randomDiscount() {
+  return Math.floor(Math.random() * 46) + 5;
+}
+
 async function consumeCode(code) {
   const ref = doc(db, CODES, code);
   return runTransaction(db, async tx => {
     const snap = await tx.get(ref);
-    if (!snap.exists()) return { ok: false, reason: "Código no registrado." };
+    if (!snap.exists()) {
+      return {
+        ok: false,
+        reason: "Código no registrado en Firebase. Genera el código desde el panel y verifica que aparezca en la lista."
+      };
+    }
     const data = snap.data();
     if (data.status !== "available") return { ok: false, reason: "Este código ya fue utilizado." };
 
     let replacement = randomCode();
+    while (replacement === MASTER_CODE) replacement = randomCode();
     let replacementRef = doc(db, CODES, replacement);
     for (let i = 0; i < 8; i++) {
       const existing = await tx.get(replacementRef);
       if (!existing.exists()) break;
       replacement = randomCode();
+      while (replacement === MASTER_CODE) replacement = randomCode();
       replacementRef = doc(db, CODES, replacement);
       if (i === 7) throw new Error("No se pudo generar un código único.");
     }
 
     const discount = Number(data.discount || 0);
+    const replacementDiscount = randomDiscount();
     tx.update(ref, { status: "used", usedAt: serverTimestamp() });
-    tx.set(replacementRef, { discount, status: "available", createdAt: serverTimestamp(), replacementOf: code });
-    return { ok: true, discount, replacement };
+    tx.set(replacementRef, { discount: replacementDiscount, status: "available", createdAt: serverTimestamp(), replacementOf: code });
+    return { ok: true, discount, replacement, replacementDiscount };
   });
 }
 
@@ -187,28 +200,90 @@ async function loadCodes() {
 }
 
 async function generateCodes() {
-  const discount = Number($("discountSelect").value);
   const requested = Math.min(20, Math.max(1, Number($("quantity").value) || 20));
   try {
-    const available = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
-    const needed = Math.min(requested, Math.max(0, TARGET_AVAILABLE - available.size));
-    if (!needed) { toast("Ya hay 20 códigos disponibles"); return; }
-    const existing = new Set(available.docs.map(d => d.id));
-    let created = 0;
-    while (created < needed) {
+    // Solo se cuentan códigos realmente disponibles.
+    const availableSnap = await getDocs(
+      query(collection(db, CODES), where("status", "==", "available"))
+    );
+
+    const needed = Math.min(
+      requested,
+      Math.max(0, TARGET_AVAILABLE - availableSnap.size)
+    );
+
+    if (!needed) {
+      toast("Ya hay 20 códigos disponibles");
+      await loadCodes();
+      return;
+    }
+
+    // Evita reutilizar cualquier ID que ya exista (disponible o usado).
+    const existing = new Set(availableSnap.docs.map(d => d.id));
+    const selected = [];
+
+    while (selected.length < needed) {
       const code = randomCode();
       if (existing.has(code)) continue;
+
       const ref = doc(db, CODES, code);
-      if ((await getDoc(ref)).exists()) { existing.add(code); continue; }
-      await setDoc(ref, { discount, status: "available", createdAt: serverTimestamp() });
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        existing.add(code);
+        continue;
+      }
+
       existing.add(code);
-      created++;
+      selected.push({ code, ref, discount: randomDiscount() });
     }
-    toast(`Se agregaron ${created} códigos`);
+
+    // Escritura en lote: los códigos se crean todos juntos.
+    const batch = writeBatch(db);
+    selected.forEach(({ ref, discount }) => {
+      batch.set(ref, {
+        discount,
+        status: "available",
+        createdAt: serverTimestamp()
+      });
+    });
+
+    await batch.commit();
+
+    // Verificación real: no mostramos "generado" hasta confirmar que
+    // Firestore puede leer los códigos que acabamos de crear.
+    const verified = [];
+    for (const item of selected) {
+      const check = await getDoc(item.ref);
+      if (check.exists() && check.data().status === "available") {
+        verified.push(item.code);
+      }
+    }
+
+    if (verified.length !== selected.length) {
+      console.error("Verificación incompleta:", { selected, verified });
+      toast(`Advertencia: ${verified.length}/${selected.length} códigos confirmados`);
+    } else {
+      toast(`Se generaron y verificaron ${verified.length} códigos`);
+    }
+
+    await loadCodes();
+  } catch (err) {
+    console.error("Error generando códigos:", err);
+    authMessage?.("No se pudieron guardar los códigos en Firestore.", "auth-error");
+    toast("Error generando códigos en Firebase");
+  }
+}
+async function randomizeAvailableDiscounts() {
+  try {
+    const available = await getDocs(query(collection(db, CODES), where("status", "==", "available")));
+    if (!available.size) { toast("No hay códigos disponibles"); return; }
+    const updates = available.docs.map(s => setDoc(doc(db, CODES, s.id), { discount: randomDiscount() }, { merge: true }));
+    await Promise.all(updates);
+    toast(`Se actualizaron ${available.size} códigos con descuentos del 5% al 50%`);
     await loadCodes();
   } catch (err) {
     console.error(err);
-    toast("Error generando códigos");
+    toast("Error actualizando descuentos");
   }
 }
 
@@ -246,6 +321,7 @@ $("close")?.addEventListener("click", () => $("overlay").classList.remove("show"
 $("overlay")?.addEventListener("click", e => { if (e.target.id === "overlay") e.currentTarget.classList.remove("show"); });
 $("heroArt")?.addEventListener("click", () => $("overlay").classList.add("show"));
 $("generateBtn").addEventListener("click", generateCodes);
+$("randomizeDiscountsBtn")?.addEventListener("click", randomizeAvailableDiscounts);
 
 document.querySelectorAll(".product").forEach(card => {
   const head = card.querySelector(".product-head");
