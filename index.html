@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#071326">
+  <title>MARYNEL | Acceso</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <div class="particles" id="particles"></div>
+
+  <main class="shell">
+    <section class="login-card" id="loginCard">
+      <div class="brand-mark" id="brandMark" title="MARYNEL">M</div>
+      <div class="brand-name">MARYNEL</div>
+      <div class="tagline">TODO LO QUE NECESITAS ESTÁ EN MARYNEL</div>
+
+      <div class="divider"></div>
+
+      <h1>Acceso privado</h1>
+      <p class="subtitle">Introduce tu código de acceso de 8 dígitos</p>
+
+      <div class="code-box" id="codeBox">
+        <input id="codeInput" type="password" inputmode="numeric"
+               maxlength="8" autocomplete="off" placeholder="••••••••"
+               aria-label="Código de acceso">
+      </div>
+
+      <button class="main-btn" id="loginBtn">
+        <span>INGRESAR</span>
+        <span class="arrow">→</span>
+      </button>
+
+      <div class="message" id="message" aria-live="polite"></div>
+
+      <div class="hint">
+        <span class="pulse-dot"></span>
+        Sistema local · Sin base de datos
+      </div>
+    </section>
+
+    <section class="welcome-card hidden" id="welcomeCard">
+      <div class="success-icon">✓</div>
+      <div class="brand-name">MARYNEL</div>
+      <h1>Acceso autorizado</h1>
+      <p>La autenticación local funcionó correctamente.</p>
+      <div class="interactive-panel">
+        <button class="color-btn" id="colorBtn">CAMBIAR COLOR ✦</button>
+        <button class="bounce-btn" id="bounceBtn">ANIMAR ✦</button>
+      </div>
+      <button class="main-btn secondary" id="logoutBtn">CERRAR SESIÓN</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
